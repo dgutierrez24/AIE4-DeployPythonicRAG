@@ -11,9 +11,10 @@ from aimakerspace.openai_utils.embedding import EmbeddingModel
 from aimakerspace.vectordatabase import VectorDatabase
 from aimakerspace.openai_utils.chatmodel import ChatOpenAI
 import chainlit as cl
+import fitz  # PyMuPDF for PDF reading
 
 system_template = """\
-Use the following context to answer a users question. If you cannot find the answer in the context, say you don't know the answer."""
+Use the following context to answer a user's question. If you cannot find the answer in the context, say you don't know the answer."""
 system_role_prompt = SystemRolePrompt(system_template)
 
 user_prompt_template = """\
@@ -49,18 +50,38 @@ class RetrievalAugmentedQAPipeline:
 
 text_splitter = CharacterTextSplitter()
 
-
 def process_text_file(file: AskFileResponse):
     import tempfile
 
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as temp_file:
-        temp_file_path = temp_file.name
+    file_extension = os.path.splitext(file.name)[-1].lower()
 
-    with open(temp_file_path, "wb") as f:
-        f.write(file.content)
+    if file_extension == ".txt":
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as temp_file:
+            temp_file_path = temp_file.name
 
-    text_loader = TextFileLoader(temp_file_path)
-    documents = text_loader.load_documents()
+        with open(temp_file_path, "wb") as f:
+            f.write(file.content)
+
+        text_loader = TextFileLoader(temp_file_path)
+        documents = text_loader.load_documents()
+
+    elif file_extension == ".pdf":
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+            temp_file_path = temp_file.name
+
+        with open(temp_file_path, "wb") as f:
+            f.write(file.content)
+
+        documents = []
+        with fitz.open(temp_file_path) as doc:
+            text = ""
+            for page in doc:
+                text += page.get_text("text")
+            documents.append(text)
+
+    else:
+        raise ValueError("Unsupported file type. Please upload a .txt or .pdf file.")
+
     texts = text_splitter.split_texts(documents)
     return texts
 
@@ -70,10 +91,10 @@ async def on_chat_start():
     files = None
 
     # Wait for the user to upload a file
-    while files == None:
+    while files is None:
         files = await cl.AskFileMessage(
-            content="Please upload a Text File file to begin!",
-            accept=["text/plain"],
+            content="Please upload a Text File or PDF to begin!",
+            accept=["text/plain", "application/pdf"],
             max_size_mb=2,
             timeout=180,
         ).send()
@@ -85,7 +106,7 @@ async def on_chat_start():
     )
     await msg.send()
 
-    # load the file
+    # Load the file
     texts = process_text_file(file)
 
     print(f"Processing {len(texts)} text chunks")
